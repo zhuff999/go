@@ -3,7 +3,7 @@
 import { Redis } from '@upstash/redis';
 
 import { AdminConfig } from './admin.types';
-import { Favorite, IStorage, PlayRecord } from './types';
+import { Favorite, IStorage, PlayRecord, SkipConfig } from './types';
 
 // 搜索历史最大条数
 const SEARCH_HISTORY_LIMIT = 20;
@@ -209,6 +209,15 @@ export class UpstashRedisStorage implements IStorage {
     if (favoriteKeys.length > 0) {
       await withRetry(() => this.client.del(...favoriteKeys));
     }
+
+    // 删除跳过片头片尾配置
+    const skipConfigPattern = `u:${userName}:skip:*`;
+    const skipConfigKeys = await withRetry(() =>
+      this.client.keys(skipConfigPattern)
+    );
+    if (skipConfigKeys.length > 0) {
+      await withRetry(() => this.client.del(...skipConfigKeys));
+    }
   }
 
   // ---------- 搜索历史 ----------
@@ -266,6 +275,73 @@ export class UpstashRedisStorage implements IStorage {
 
   async setAdminConfig(config: AdminConfig): Promise<void> {
     await withRetry(() => this.client.set(this.adminConfigKey(), config));
+  }
+
+  // ---------- 跳过片头片尾配置 ----------
+  private skipConfigKey(user: string, source: string, id: string) {
+    return `u:${user}:skip:${source}+${id}`;
+  }
+
+  async getSkipConfig(
+    userName: string,
+    source: string,
+    id: string
+  ): Promise<SkipConfig | null> {
+    const val = await withRetry(() =>
+      this.client.get(this.skipConfigKey(userName, source, id))
+    );
+    return val ? (val as SkipConfig) : null;
+  }
+
+  async setSkipConfig(
+    userName: string,
+    source: string,
+    id: string,
+    config: SkipConfig
+  ): Promise<void> {
+    await withRetry(() =>
+      this.client.set(this.skipConfigKey(userName, source, id), config)
+    );
+  }
+
+  async deleteSkipConfig(
+    userName: string,
+    source: string,
+    id: string
+  ): Promise<void> {
+    await withRetry(() =>
+      this.client.del(this.skipConfigKey(userName, source, id))
+    );
+  }
+
+  async getAllSkipConfigs(
+    userName: string
+  ): Promise<{ [key: string]: SkipConfig }> {
+    const pattern = `u:${userName}:skip:*`;
+    const keys = await withRetry(() => this.client.keys(pattern));
+
+    if (keys.length === 0) {
+      return {};
+    }
+
+    const configs: { [key: string]: SkipConfig } = {};
+
+    // 批量获取所有配置
+    const values = await withRetry(() => this.client.mget(keys));
+
+    keys.forEach((key, index) => {
+      const value = values[index];
+      if (value) {
+        // 从key中提取source+id
+        const match = key.match(/^u:.+?:skip:(.+)$/);
+        if (match) {
+          const sourceAndId = match[1];
+          configs[sourceAndId] = value as SkipConfig;
+        }
+      }
+    });
+
+    return configs;
   }
 }
 
